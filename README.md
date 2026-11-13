@@ -2,6 +2,16 @@
 
 WeeWaa Motion 是一款 macOS 原生工具，可连接 WeeWaa 左右手柄，查看六轴体感数据，并将动作发送给其他应用。
 
+## 界面预览
+
+**双手实时仪表**
+
+![WeeWaa Motion 双手实时仪表](docs/images/dashboard.png)
+
+**鼠标模式与体感输出**
+
+![WeeWaa Motion 鼠标模式和体感输出设置](docs/images/mouse-mode.png)
+
 ## 功能
 
 - **鼠标模式**：选择一只手柄通过转动移动指针，另一只手柄通过短促敲击触发鼠标左键；支持调整灵敏度、敲击阈值和方向。
