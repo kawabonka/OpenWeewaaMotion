@@ -48,6 +48,7 @@ enum CalibrationWork {
     case zero
     case face(Int)
     case turn(Int, Double)
+    case automatic
 }
 
 final class ControllerState: ObservableObject, Identifiable {
@@ -128,6 +129,7 @@ final class ControllerState: ObservableObject, Identifiable {
         case .zero: message = "保持手柄静止 3 秒…"
         case .face: message = "保持当前朝向静止 3 秒…"
         case .turn: message = "缓慢、单方向转动指定角度，完成后点「结束转角」。"
+        case .automatic: message = "请缓慢随机翻转手柄，覆盖各个方向，并在不同方向稍作停顿。"
         }
     }
     func cancelCalibration() { work = nil; calibrating = false; turning = false; progress = 0 }
@@ -144,6 +146,32 @@ final class ControllerState: ObservableObject, Identifiable {
         calibration.gyroScale[axis] = scale; calibration.gyroDone[axis] = true
         saveCalibration(); message = "G\(["X","Y","Z"][axis]) 转角比例已保存：\(String(format: "%.3f", scale)) count/(°/s)。"
         cancelCalibration(); recenter()
+    }
+    private func finishAutomatic() {
+        var low = [Double](repeating:.infinity,count:3)
+        var high = [Double](repeating:-.infinity,count:3)
+        // Short stable windows exclude impact acceleration from the extrema.
+        for start in stride(from:0,to:max(0,samples.count-25),by:25) {
+            let window = samples[start..<start+25]
+            let mean = (0..<3).map { i in window.map { $0[i] }.reduce(0,+)/Double(window.count) }
+            let sd = (0..<3).map { i in sqrt(window.map { pow($0[i]-mean[i],2) }.reduce(0,+)/Double(window.count)) }
+            if sd.max()! < 90 {
+                for i in 0..<3 { low[i] = min(low[i],mean[i]); high[i] = max(high[i],mean[i]) }
+            }
+        }
+        let scales = (0..<3).map { (high[$0]-low[$0])/2 }
+        if scales.allSatisfy({ $0 > 1500 && $0 < 3000 }) {
+            calibration.accelBias = (0..<3).map { (high[$0]+low[$0])/2 }
+            calibration.accelScale = scales
+            calibration.facesDone = true
+            saveCalibration(); message = "自动采样完成，已保存加速度估算。角速度比例仍使用默认值或已有校准值。"
+        } else { message = "方向覆盖不足，继续使用现有配置；请更慢地翻转并在各方向停顿后重试。" }
+        cancelCalibration()
+    }
+    func defaultAcceleration() {
+        calibration.accelBias = [0,0,0]; calibration.accelScale = [2048,2048,2048]
+        calibration.facesDone = false; faces = [:]; saveCalibration()
+        message = "已恢复默认加速度估算，保留陀螺仪零偏。"
     }
     private func finishStationary(_ job: CalibrationWork) {
         guard samples.count >= 120 else { message = "有效采样不足，请重试。"; cancelCalibration(); return }
@@ -174,6 +202,7 @@ final class ControllerState: ObservableObject, Identifiable {
                 message = "六面校准完成，加速度零偏和每轴比例已保存。"
             } else { message = "已采集 \(faces.count)/6 个朝向。" }
         case .turn: break
+        case .automatic: break
         }
         saveCalibration(); cancelCalibration(); recenter()
     }
@@ -191,6 +220,9 @@ final class ControllerState: ObservableObject, Identifiable {
             switch job {
             case .turn:
                 if elapsed > 30 { message = "转角校准超时，请重新开始。"; cancelCalibration() }
+            case .automatic:
+                progress = min(1,elapsed/30)
+                if elapsed >= 30 { finishAutomatic() }
             default:
                 progress = min(1, elapsed/3)
                 if elapsed >= 3 { finishStationary(job) }

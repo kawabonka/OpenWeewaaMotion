@@ -1,6 +1,26 @@
 import Foundation
 import Combine
 import Darwin
+import CoreGraphics
+import ApplicationServices
+
+struct PairButtons {
+    var pressed: Set<UInt16> = []
+    func apply(to b: inout [UInt8]) {
+        // DSU face names correspond to the physical Switch layout: circle=A.
+        let buttons: [(UInt16, Int, UInt8, Int)] = [
+            (123,16,0x80,24),(125,16,0x40,25),(124,16,0x20,26),(126,16,0x10,27),
+            (36,16,0x08,-1),(15,16,0x04,-1),(3,16,0x02,-1),(51,16,0x01,-1),
+            (7,17,0x80,28),(6,17,0x40,29),(0,17,0x20,30),(1,17,0x10,31),
+            (14,17,0x08,32),(12,17,0x04,33),(2,17,0x02,34),(13,17,0x01,35)
+        ]
+        for (key,byte,mask,analog) in buttons where pressed.contains(key) {
+            b[byte] |= mask
+            if analog >= 0 { b[analog] = 255 }
+        }
+        if pressed.contains(49) { b[18] = 1 }
+    }
+}
 
 enum DSUCodec {
     static func u16(_ b: [UInt8], _ p: Int) -> UInt16 { UInt16(b[p]) | UInt16(b[p+1]) << 8 }
@@ -39,11 +59,12 @@ enum DSUCodec {
         }
         return b
     }
-    static func motion(slot: Int, sequence: UInt32, timestamp: UInt64, accel: [Double], gyro: [Double], battery: Int?) -> [UInt8] {
+    static func motion(slot: Int, sequence: UInt32, timestamp: UInt64, accel: [Double], gyro: [Double], battery: Int?, buttons: PairButtons = PairButtons()) -> [UInt8] {
         var b = [UInt8](repeating: 0, count: 80)
         b.replaceSubrange(0..<12, with: info(slot:slot,active:true,battery:battery)); b[11] = 1
         put(sequence, into: &b, at: 12)
         for i in 20..<24 { b[i] = 128 }
+        buttons.apply(to:&b)
         put(timestamp, into: &b, at: 48)
         // DSU expects accel XYZ, then gyro pitch/yaw/roll. For the
         // output XYZ rotation vector this is X/Z/Y respectively.
@@ -54,12 +75,68 @@ enum DSUCodec {
 }
 
 final class MotionOutput: ObservableObject {
+    @Published var mouseEnabled = false
+    @Published var mouseHand = 0
+    @Published var mouseSensitivity = 8.0
+    @Published var tapThreshold = 1.2
+    @Published var invertMouseX = false
+    @Published var invertMouseY = false
+    @Published var mousePermission = AXIsProcessTrusted()
+    private var mouseLastTime = 0.0
+    private var tapBaseline: [Double]?
+    private var tapArmed = false
+    private var lastTap = 0.0
+    func setMouseMode(_ enabled: Bool) {
+        mouseEnabled = enabled
+        mouseLastTime = 0; tapBaseline = nil; tapArmed = false
+        if enabled && !AXIsProcessTrusted() {
+            let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(options)
+        }
+        mousePermission = AXIsProcessTrusted()
+    }
+    private func mouseFrame(_ state: ControllerState) {
+        guard mouseEnabled, active(state) else { return }
+        mousePermission = AXIsProcessTrusted()
+        guard mousePermission else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        if state.hand.rawValue == mouseHand {
+            let dt = mouseLastTime == 0 ? 0 : now - mouseLastTime
+            mouseLastTime = now
+            guard dt > 0, dt < 0.1, let event = CGEvent(source:nil) else { return }
+            let gyro = state.outputGyro
+            func filtered(_ v: Double) -> Double { abs(v) < 3 ? 0 : v }
+            let dx = filtered(gyro[2]) * dt * mouseSensitivity * (invertMouseX ? -1 : 1)
+            let dy = filtered(gyro[0]) * dt * mouseSensitivity * (invertMouseY ? -1 : 1)
+            guard dx != 0 || dy != 0 else { return }
+            let p = event.location
+            CGEvent(mouseEventSource:nil, mouseType:.mouseMoved, mouseCursorPosition:CGPoint(x:p.x + dx,y:p.y + dy), mouseButton:.left)?.post(tap:.cghidEventTap)
+        } else {
+            let a = state.outputAccel
+            guard let baseline = tapBaseline else { tapBaseline = a; return }
+            let impact = sqrt(zip(a,baseline).map { pow($0 - $1,2) }.reduce(0,+))
+            tapBaseline = zip(a,baseline).map { $1 * 0.95 + $0 * 0.05 }
+            if impact < tapThreshold * 0.4 { tapArmed = true }
+            if tapArmed && impact > tapThreshold && now - lastTap > 0.4 {
+                tapArmed = false; lastTap = now
+                if let location = CGEvent(source:nil)?.location {
+                    CGEvent(mouseEventSource:nil,mouseType:.leftMouseDown,mouseCursorPosition:location,mouseButton:.left)?.post(tap:.cghidEventTap)
+                    CGEvent(mouseEventSource:nil,mouseType:.leftMouseUp,mouseCursorPosition:location,mouseButton:.left)?.post(tap:.cghidEventTap)
+                }
+            }
+        }
+    }
     @Published var dsuEnabled = false
     @Published var jsonEnabled = false
     @Published var status = "输出已关闭"
     @Published var clientCount = 0
     @Published var sent = 0
     @Published var jsonPort = 8765
+    @Published var pairMode = false
+    @Published var pairHand = 0
+    @Published var mixHands = false
+    @Published var keyboardPermission = CGPreflightListenEventAccess()
+    @Published var pressedKeys = "无"
     @Published var rumbleEnabled = false
     @Published var rumbleStatus = "游戏震动接收已关闭"
     var onRumble: ((Hand, Double) -> Void)?
@@ -71,10 +148,26 @@ final class MotionOutput: ObservableObject {
     private var rumbleSource: DispatchSourceRead?
     private let serverID = UInt32.random(in:1...UInt32.max)
     private var sequences = [UInt32](repeating:0,count:2)
+    private var timestamps = [UInt64](repeating:0,count:2)
+    static func outputSlot(hand: Int, pairMode: Bool, mixHands: Bool, target: Int) -> Int {
+        pairMode && mixHands ? target : hand
+    }
     private struct Client { var address: sockaddr_in; var slots: [Int:Double] }
     private var clients = [String:Client]()
     private var sentCount = 0
     private var lastUI = 0.0
+    private var keyboardTimer: Timer?
+    private weak var lastPairState: ControllerState?
+    private let pairKeys: [UInt16] = [123,125,124,126,36,15,3,51,7,6,0,1,14,12,2,13,49]
+    func setPairMode(_ enabled: Bool) {
+        pairMode = enabled
+        if enabled && !CGPreflightListenEventAccess() { _ = CGRequestListenEventAccess() }
+        keyboardPermission = CGPreflightListenEventAccess()
+        keyboardTimer?.invalidate(); keyboardTimer = nil
+        if enabled {
+            keyboardTimer = Timer.scheduledTimer(withTimeInterval:1.0/60.0,repeats:true) { [weak self] _ in self?.sendKeyboardFrame() }
+        } else { pressedKeys = "无"; lastPairState = nil }
+    }
     func setDSU(_ enabled: Bool) {
         if !enabled { stop(); return }
         guard fd < 0 else { return }
@@ -130,10 +223,10 @@ final class MotionOutput: ObservableObject {
             onRumble?(hand,intensity)
         }
     }
-    func shutdown() { stop(); setRumble(false); if jsonFD >= 0 { Darwin.close(jsonFD); jsonFD = -1 } }
+    func shutdown() { setMouseMode(false); setPairMode(false); stop(); setRumble(false); if jsonFD >= 0 { Darwin.close(jsonFD); jsonFD = -1 } }
     private func active(_ state: ControllerState?) -> Bool {
         guard let state else { return false }
-        return !state.demo && state.connected && state.streaming && state.calibration.ready && !state.calibrating && ProcessInfo.processInfo.systemUptime-state.lastArrival < 0.5
+        return !state.demo && state.connected && state.streaming && !state.calibrating && ProcessInfo.processInfo.systemUptime-state.lastArrival < 0.5
     }
     private func send(_ bytes: [UInt8], to address: sockaddr_in, socket: Int32? = nil) {
         var target = address
@@ -158,8 +251,11 @@ final class MotionOutput: ObservableObject {
                 let amount = Int(DSUCodec.u32(b,20))
                 guard amount <= 4, b.count >= 24+amount else { continue }
                 for slot in b[24..<24+amount] where slot < 4 {
-                    let state = lookup?(Int(slot))
-                    let payload = DSUCodec.info(slot:Int(slot),active:active(state),battery:state?.battery)
+                    let mixed = pairMode && mixHands
+                    let state: ControllerState? = mixed && Int(slot) == pairHand
+                        ? [lookup?(0),lookup?(1)].compactMap { $0 }.first(where: { active($0) })
+                        : mixed ? nil : lookup?(Int(slot))
+                    let payload = DSUCodec.info(slot:Int(slot),active:(pairMode && Int(slot) == pairHand) || active(state),battery:state?.battery)
                     send(DSUCodec.packet(type:type,payload:payload,serverID:serverID),to:address)
                 }
             } else if type == 0x100002, b.count >= 28 {
@@ -176,15 +272,40 @@ final class MotionOutput: ObservableObject {
             }
         }
     }
+    private func sendKeyboardFrame() {
+        guard pairMode else { return }
+        keyboardPermission = CGPreflightListenEventAccess()
+        let keys = Set(pairKeys.filter { CGEventSource.keyState(.combinedSessionState,key:CGKeyCode($0)) })
+        let labels: [UInt16:String] = [123:"←",125:"↓",124:"→",126:"↑",36:"回车",15:"R",3:"F",51:"删除",7:"X",6:"Z",0:"A",1:"S",14:"E",12:"Q",2:"D",13:"W",49:"空格"]
+        let text = keys.sorted().compactMap { labels[$0] }.joined(separator:" ")
+        let shown = text.isEmpty ? "无" : text
+        if pressedKeys != shown { pressedKeys = shown }
+        guard dsuEnabled else { return }
+        let state = lastPairState.flatMap { active($0) && (mixHands || $0.hand.rawValue == pairHand) ? $0 : nil }
+        sendFrame(slot:pairHand, timestamp:UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000), accel:state?.outputAccel ?? [0,0,1], gyro:state?.outputGyro ?? [0,0,0], battery:state?.battery, buttons:PairButtons(pressed:keys))
+    }
+    private func sendFrame(slot: Int, timestamp: UInt64, accel: [Double], gyro: [Double], battery: Int?, buttons: PairButtons) {
+        let now = ProcessInfo.processInfo.systemUptime
+        clients = clients.filter { $0.value.slots.values.contains { now-$0 < 5 } }
+        sequences[slot] &+= 1
+        timestamps[slot] = max(timestamp, timestamps[slot] &+ 1)
+        let payload = DSUCodec.motion(slot:slot,sequence:sequences[slot],timestamp:timestamps[slot],accel:accel,gyro:gyro,battery:battery,buttons:buttons)
+        let packet = DSUCodec.packet(type:0x100002,payload:payload,serverID:serverID)
+        for client in clients.values {
+            if let seen = client.slots[slot], now-seen < 5 { send(packet,to:client.address); sentCount += 1 }
+        }
+        if now-lastUI >= 1 { clientCount = clients.count; sent = sentCount; lastUI = now }
+    }
     func publish(_ state: ControllerState) {
         guard !state.demo else { return }
+        mouseFrame(state)
         let now = ProcessInfo.processInfo.systemUptime
         if jsonEnabled {
             if jsonFD < 0 { jsonFD = Darwin.socket(AF_INET,SOCK_DGRAM,0) }
             if jsonFD >= 0 {
                 let value: [String:Any] = ["hand":state.hand == .left ? "left" : "right", "device":state.hand.uuid.uuidString,
                     "timestamp_us":state.timestampUS,"raw_axes":state.outputRaw,
-                    "accel_g":state.outputAccel,"gyro_dps":state.outputGyro,"calibrated":state.calibration.ready]
+                    "accel_g":state.outputAccel,"gyro_dps":state.outputGyro,"calibrated":state.calibration.ready,"usable":true]
                 if let data = try? JSONSerialization.data(withJSONObject:value) {
                     var target = sockaddr_in(); target.sin_len = UInt8(MemoryLayout<sockaddr_in>.size); target.sin_family = sa_family_t(AF_INET)
                     target.sin_addr.s_addr = inet_addr("127.0.0.1"); target.sin_port = UInt16(jsonPort).bigEndian
@@ -194,12 +315,10 @@ final class MotionOutput: ObservableObject {
         }
         clients = clients.filter { $0.value.slots.values.contains { now-$0 < 5 } }
         if dsuEnabled && active(state) {
-            let slot = state.hand.rawValue; sequences[slot] &+= 1
-            let payload = DSUCodec.motion(slot:slot,sequence:sequences[slot],timestamp:state.timestampUS,accel:state.outputAccel,gyro:state.outputGyro,battery:state.battery)
-            let packet = DSUCodec.packet(type:0x100002,payload:payload,serverID:serverID)
-            for client in clients.values {
-                if let seen = client.slots[slot], now-seen < 5 { send(packet,to:client.address); sentCount += 1 }
-            }
+            let slot = Self.outputSlot(hand:state.hand.rawValue,pairMode:pairMode,mixHands:mixHands,target:pairHand)
+            if pairMode && slot == pairHand { lastPairState = state }
+            let buttons = pairMode && slot == pairHand ? PairButtons(pressed:Set(pairKeys.filter { CGEventSource.keyState(.combinedSessionState,key:CGKeyCode($0)) })) : PairButtons()
+            sendFrame(slot:slot,timestamp:state.timestampUS,accel:state.outputAccel,gyro:state.outputGyro,battery:state.battery,buttons:buttons)
         }
         if now-lastUI >= 1 { clientCount = clients.count; sent = sentCount; lastUI = now }
     }

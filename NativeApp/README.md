@@ -2,7 +2,7 @@
 
 原生 macOS 双手六轴工具，使用 SwiftUI + CoreBluetooth。无需 Python 环境即可运行。
 
-应用：`/path/to/OpenWeewaaMotion/dist/WeeWaa Motion.app`
+应用：`/Users/admin/Documents/ChatGPT/wewa/dist/WeeWaa Motion.app`
 
 ## 使用
 
@@ -36,9 +36,19 @@
 
 校准按左右手独立存放在 App 的本机 UserDefaults 中。未校准比例为加速度 2048 count/g、角速度 16.4 count/(°/s) 的暂定值，界面标记“估算”；不能将它们视作已验证量程。
 
+## 鼠标模式
+
+在“体感输出”中开启“鼠标模式”，选择哪只手柄移动指针，另一只手柄短促敲击触发鼠标左键。转动移动手柄控制指针；可调整移动灵敏度、敲击阈值及水平 / 垂直方向。阈值越高，需要的敲击越强。建议先完成静置校准，避免指针漂移。
+
+首次开启时在 macOS“系统设置 → 隐私与安全性 → 辅助功能”中允许 WeeWaa Motion，授权后重新开启鼠标模式。演示数据、正在校准或断连的手柄不会控制鼠标。此功能尚未使用真实手柄进行体验验证，阈值和方向可能需要按握持方式调整。
+
 ## 输出
 
 ### DSU / Cemuhook
+
+“Joy-Con Pair · 键盘按键”可把键盘状态附加到选定手的 DSU 槽位。开启时 macOS 可能要求在“隐私与安全性 → 输入监控”允许 WeeWaa Motion；授权后如无效请重新启动 App。方向键对应十字键；A/S/Z/X 对应 A/X/B/Y；Q/E 对应 L/R；W/D 对应 ZL/ZR；F/R 对应 L3/R3；回车对应 +，删除对应 −，空格对应 Home。按键含义以接收端 DSU 映射为准。摇杆保持中立；键盘按键独立定时发送，不依赖手柄连接。界面显示输入监控权限及当前按下的键。
+
+可开启“双手混合到同一个槽位”：两手样本交替发往所选槽位，共用按键和递增包序号；任一手有效即可输出。接收端会把两手当作同一传感器，因此数据可能互相干扰，也不能还原为两套独立体感。关闭时左、右手仍分别位于 slot 0 和 slot 1。尚未在 Astris 游戏内验证按键映射、混合效果或输入权限。
 
 在“体感输出”开启 DSU。服务器仅绑定 `127.0.0.1:26760`，同一 Mac 上的模拟器可作为 DSU 客户端订阅：
 
@@ -46,7 +56,7 @@
 - 槽位 1：右手。
 - 发送加速度（g）、角速度（°/s）及单调时间戳（微秒）。
 - 按键、摇杆和触摸保持中立；不是完整游戏手柄模拟。
-- 完成静置、六面、三个转角校准后，对应槽位才报告可用并输出真实数据。
+- 连接后即可用默认估算值输出；完成静置、六面及三个转角校准后物理单位更可靠。
 - 正在校准、断连或数据停止时暂停该槽位输出。订阅超时为 5 秒，客户端须续订。
 - 数据包内 MAC 为本程序的稳定槽位标识，不是手柄真实蓝牙地址。
 
@@ -81,7 +91,7 @@
 ## 构建与验证
 
 ```sh
-cd /path/to/OpenWeewaaMotion
+cd /Users/admin/Documents/ChatGPT/wewa
 bash NativeApp/build.sh
 xcrun swiftc -swift-version 5 -module-cache-path .build/ModuleCache \
   NativeApp/Sources/Motion.swift NativeApp/Sources/Output.swift \

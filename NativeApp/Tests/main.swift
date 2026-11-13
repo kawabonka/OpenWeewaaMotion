@@ -5,7 +5,7 @@ func check(_ condition: @autoclosure () -> Bool, _ message:String) {
 }
 var checked = 0
 for name in ["mac-left-stream.jsonl","mac-right-stream.jsonl"] {
-    for line in try String(contentsOfFile:"NativeApp/Tests/Fixtures/"+name,encoding:.utf8).split(separator:"\n") {
+    for line in try String(contentsOfFile:name,encoding:.utf8).split(separator:"\n") {
         let event = try JSONSerialization.jsonObject(with:Data(line.utf8)) as! [String:Any]
         guard let expected = event["motion"] as? [String:Any], let hex = event["hex"] as? String else { continue }
         let bytes = stride(from:0,to:hex.count,by:2).map { i -> UInt8 in
@@ -36,6 +36,13 @@ check(Float(bitPattern:DSUCodec.u32(packet,76)) == 1,"acceleration placement")
 check(Float(bitPattern:DSUCodec.u32(packet,88)) == 4,"pitch placement")
 check(Float(bitPattern:DSUCodec.u32(packet,92)) == 6,"yaw placement")
 check(Float(bitPattern:DSUCodec.u32(packet,96)) == 5,"roll placement")
+let keys = PairButtons(pressed:[0,12,126,36])
+let keyPayload = DSUCodec.motion(slot:0,sequence:1,timestamp:1,accel:[0,0,1],gyro:[0,0,0],battery:nil,buttons:keys)
+check(keyPayload[16] == 0x18 && keyPayload[17] == 0x24,"keyboard button bitmasks")
+check(keyPayload[27] == 255 && keyPayload[30] == 255 && keyPayload[33] == 255,"keyboard analog button values")
+check(keyPayload[28] == 0 && keyPayload[34] == 0,"unpressed buttons")
+check(MotionOutput.outputSlot(hand:0,pairMode:true,mixHands:true,target:1) == 1 && MotionOutput.outputSlot(hand:1,pairMode:true,mixHands:true,target:1) == 1,"both hands route to target slot")
+check(MotionOutput.outputSlot(hand:1,pairMode:true,mixHands:false,target:0) == 1 && MotionOutput.outputSlot(hand:1,pairMode:false,mixHands:true,target:0) == 1,"normal slot routing")
 var request = DSUCodec.packet(type:0x100002,payload:[1,0,0,0,0,0,0,0],serverID:9)
 request.replaceSubrange(0..<4,with:Array("DSUC".utf8)); DSUCodec.put(UInt32(0),into:&request,at:8)
 DSUCodec.put(DSUCodec.crc(request),into:&request,at:8)

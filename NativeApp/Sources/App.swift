@@ -54,6 +54,8 @@ struct MainView: View {
                 }.pickerStyle(.segmented).frame(width:360)
                 Spacer()
                 Circle().fill(manager.demo ? amber : cyan).frame(width:6,height:6)
+                BatteryStatus(state:manager.controllers[0])
+                BatteryStatus(state:manager.controllers[1])
                 Text(manager.demo ? "模拟数据 · 不发送到输出接口" : manager.bluetoothStatus).font(.system(size:11)).foregroundStyle(.secondary)
             }.padding(.horizontal,26).padding(.bottom,20)
             ScrollView {
@@ -81,6 +83,20 @@ struct MainView: View {
     }
 }
 
+struct BatteryStatus: View {
+    @ObservedObject var state: ControllerState
+    var compact = false
+    var body: some View {
+        let title = state.battery.map { "\($0)%" } ?? (state.demo ? "演示" : state.connected ? "读取中" : "未连接")
+        Label(compact ? title : "\(state.hand.title) \(title)",systemImage:"battery.100percent")
+            .font(.system(size:11,weight:.medium))
+            .foregroundStyle((state.battery ?? 100) <= 20 ? Color.orange : Color.secondary)
+            .fixedSize().padding(.horizontal,8).padding(.vertical,5)
+            .background(.white.opacity(0.04),in:RoundedRectangle(cornerRadius:7))
+            .accessibilityLabel("\(state.hand.title)电量：\(title)")
+    }
+}
+
 struct ControllerCard: View {
     @ObservedObject var state: ControllerState
     let manager: MotionManager
@@ -95,7 +111,7 @@ struct ControllerCard: View {
                     Text(state.status).font(.system(size:11)).foregroundStyle(state.streaming ? tint : .secondary)
                 }
                 Spacer()
-                if let battery = state.battery { Label("\(battery)%",systemImage:"battery.100percent").font(.system(size:11)).foregroundStyle(.secondary) }
+                BatteryStatus(state:state,compact:true)
                 Button(state.connected ? "断开" : "连接") { if state.connected { manager.disconnect(state.hand) } else { manager.connect(state.hand) } }.buttonStyle(.bordered)
             }
             HStack(spacing:22) {
@@ -208,6 +224,13 @@ struct CalibrationView: View {
             Text(state.message).font(.system(size:13,weight:.medium)).foregroundStyle(cyan).padding(14).frame(maxWidth:.infinity,alignment:.leading).background(cyan.opacity(0.07),in:RoundedRectangle(cornerRadius:12))
             if state.calibrating { HStack { if state.turning { ProgressView().controlSize(.small); Text("正在积分转角…") } else { ProgressView(value:state.progress) }; Spacer(); Button("取消") { state.cancelCalibration(); state.message = "校准已取消。" } } }
             GroupBox {
+                HStack {
+                    VStack(alignment:.leading,spacing:6) { Text("自动校准 · 30 秒").font(.headline); Text("缓慢随机翻转，在不同方向稍作停顿。自动估算加速度偏置与比例；角速度比例保留默认估算或已有校准。").foregroundStyle(.secondary) }
+                    Spacer(); Button("恢复加速度默认值") { state.defaultAcceleration() }.disabled(state.calibrating)
+                    Button("开始自动校准") { state.begin(.automatic) }.disabled(state.calibrating)
+                }.padding(10)
+            }
+            GroupBox {
                 HStack { VStack(alignment:.leading,spacing:6) { Text("1 · 静置校准").font(.headline); Text("将手柄放在固定表面，保持不动。采集 3 秒，估计陀螺仪零偏。").foregroundStyle(.secondary) }; Spacer(); Button(state.calibration.zeroed ? "重新采集" : "静置采集") { state.begin(.zero) }.disabled(state.calibrating); badge(state.calibration.zeroed) }.padding(10)
             }
             GroupBox {
@@ -277,10 +300,30 @@ struct OutputView: View {
             Text("把动作交给其他程序").font(.system(size:25,weight:.semibold))
             Text("标准 DSU 提供体感数据；JSON 便于接入自己的程序。两路输出都只在这台 Mac 上运行。").foregroundStyle(.secondary)
             GroupBox {
+                VStack(alignment:.leading,spacing:14) {
+                    HStack { Label("鼠标模式",systemImage:"cursorarrow.motionlines").font(.title2); Spacer(); Toggle("开启鼠标模式",isOn:Binding(get:{ output.mouseEnabled },set:{ output.setMouseMode($0) })).toggleStyle(.switch) }
+                    Picker("移动指针的手柄",selection:$output.mouseHand) { Text("左手柄移动，右手柄敲击点击").tag(0); Text("右手柄移动，左手柄敲击点击").tag(1) }
+                    HStack { Text("移动灵敏度"); Slider(value:$output.mouseSensitivity,in:2...20); Text(String(format:"%.1f",output.mouseSensitivity)).frame(width:36) }
+                    HStack { Text("敲击阈值"); Slider(value:$output.tapThreshold,in:0.5...3); Text(String(format:"%.1f g",output.tapThreshold)).frame(width:48) }
+                    HStack { Toggle("水平反向",isOn:$output.invertMouseX); Toggle("垂直反向",isOn:$output.invertMouseY) }
+                    Text("转动移动手柄控制指针；短促敲击另一只手柄触发鼠标左键。数值越高，敲击需要越用力。建议先完成静置校准。") .foregroundStyle(.secondary)
+                    Text(output.mousePermission ? "辅助功能：已授权" : "请在系统设置 → 隐私与安全性 → 辅助功能中允许 WeeWaa Motion，然后重新开启鼠标模式。") .font(.system(size:12)).foregroundStyle(output.mousePermission ? cyan : amber)
+                }.padding(14)
+            }
+            GroupBox {
                 VStack(alignment:.leading,spacing:16) {
                     HStack { Label("DSU / Cemuhook",systemImage:"gamecontroller").font(.title2); Spacer(); Toggle("开启 DSU",isOn:Binding(get:{ output.dsuEnabled },set:{ output.setDSU($0) })).toggleStyle(.switch) }
                     Text("127.0.0.1 : 26760").font(.system(size:25,weight:.medium,design:.monospaced)).foregroundStyle(cyan)
-                    Text("在支持 DSU 的模拟器中添加以上服务器。槽位 0 是左手，槽位 1 是右手；按键和摇杆保持中立，此接口提供加速度与角速度。通用游戏或 nxnative 是否接受 DSU，需由该程序支持的输入接口决定。").foregroundStyle(.secondary)
+                    Toggle("Joy-Con Pair · 键盘按键",isOn:Binding(get:{ output.pairMode },set:{ output.setPairMode($0) }))
+                    if output.pairMode {
+                        Picker("输出槽位",selection:$output.pairHand) { Text("槽位 0").tag(0); Text("槽位 1").tag(1) }
+                        Toggle("双手混合到同一个槽位",isOn:$output.mixHands)
+                        HStack { Text(output.keyboardPermission ? "输入监控：已授权" : "输入监控：未授权，请在系统设置中允许 WeeWaa Motion"); Spacer(); Text("当前按键：\(output.pressedKeys)") }.font(.system(size:12)).foregroundStyle(output.keyboardPermission ? cyan : amber)
+                        Text("方向键：十字键  ·  A/S/Z/X：A/X/B/Y  ·  Q/E：L/R  ·  W/D：ZL/ZR  ·  F/R：L3/R3  ·  回车：+  ·  删除：−  ·  空格：Home").font(.system(size:12)).textSelection(.enabled)
+                        Text(output.mixHands ? "左右手的数据交替发送到所选槽位，模拟器会把它们当作同一个传感器，动作可能互相干扰。键盘可独立于手柄连接使用；摇杆保持中立。" : "槽位 0 对应左手，槽位 1 对应右手。键盘可独立于手柄连接使用；摇杆保持中立。") .foregroundStyle(amber)
+                    } else {
+                        Text("槽位 0 是左手，槽位 1 是右手；按键和摇杆保持中立。") .foregroundStyle(.secondary)
+                    }
                     ForEach(controllers) { DSUStateRow(state:$0) }
                     HStack { Text(output.status); Spacer(); Text("\(output.clientCount) 个订阅客户端 · 已发送 \(output.sent) 包") }.font(.system(size:11,design:.monospaced)).foregroundStyle(.secondary)
                     Link("DSU 协议参考",destination:URL(string:"https://v1993.github.io/cemuhook-protocol/")!).font(.system(size:11))
@@ -303,13 +346,13 @@ struct OutputView: View {
                     Text(output.rumbleStatus).font(.system(size:11)).foregroundStyle(.secondary)
                 }.padding(14)
             }
-            Label("DSU 只发送已完成校准、数据新鲜的真实手柄。开始校准、断连或数据中断时，会暂停该手柄的标准输出。",systemImage:"checkmark.seal").font(.system(size:12)).foregroundStyle(.secondary)
+            Label("未完整校准时使用默认估算值输出。校准、断连或数据中断时暂停该手柄输出。",systemImage:"checkmark.seal").font(.system(size:12)).foregroundStyle(.secondary)
         }.padding(24).background(panel,in:RoundedRectangle(cornerRadius:20))
     }
 }
 struct DSUStateRow: View {
     @ObservedObject var state:ControllerState
     var body: some View {
-        HStack { Text("槽位 \(state.hand.rawValue) · \(state.hand.title)"); Spacer(); Text(state.calibration.ready ? (state.streaming && !state.demo ? "可以输出" : "等待真实手柄数据") : "待完成：\(state.remainingCalibration)").foregroundStyle(state.calibration.ready ? cyan : amber) }.font(.system(size:12))
+        HStack { Text("槽位 \(state.hand.rawValue) · \(state.hand.title)"); Spacer(); Text(state.streaming && !state.demo ? (state.calibration.ready ? "已校准 · 可以输出" : "默认估算 · 可以输出") : "等待真实手柄数据").foregroundStyle(state.calibration.ready ? cyan : amber) }.font(.system(size:12))
     }
 }
