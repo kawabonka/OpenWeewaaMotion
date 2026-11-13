@@ -86,6 +86,10 @@ final class MotionOutput: ObservableObject {
     private var tapBaseline: [Double]?
     private var tapArmed = false
     private var lastTap = 0.0
+    func refreshPermissions() {
+        mousePermission = AXIsProcessTrusted()
+        keyboardPermission = CGPreflightListenEventAccess()
+    }
     func setMouseMode(_ enabled: Bool) {
         mouseEnabled = enabled
         mouseLastTime = 0; tapBaseline = nil; tapArmed = false

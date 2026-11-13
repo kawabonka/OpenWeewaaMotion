@@ -22,9 +22,19 @@ private let axisColors: [Color] = [.red,.green,.blue]
                     if ProcessInfo.processInfo.arguments.contains("--connect") { manager.connectBoth() }
                     if ProcessInfo.processInfo.arguments.contains("--demo") { manager.setDemo(true) }
                 }
+                .onReceive(NotificationCenter.default.publisher(for:NSApplication.didBecomeActiveNotification)) { _ in manager.output.refreshPermissions() }
                 .onReceive(NotificationCenter.default.publisher(for:NSApplication.willTerminateNotification)) { _ in manager.shutdown() }
         }.defaultSize(width:1200,height:850)
         .commands { CommandGroup(replacing:.newItem) {} }
+    }
+}
+
+struct SettingsLink: View {
+    let title: String
+    let anchor: String
+    var body: some View {
+        Link(title,destination:URL(string:"x-apple.systempreferences:com.apple.preference.security?\(anchor)")!)
+            .font(.system(size:11))
     }
 }
 
@@ -57,6 +67,7 @@ struct MainView: View {
                 BatteryStatus(state:manager.controllers[0])
                 BatteryStatus(state:manager.controllers[1])
                 Text(manager.demo ? "模拟数据 · 不发送到输出接口" : manager.bluetoothStatus).font(.system(size:11)).foregroundStyle(.secondary)
+                if manager.bluetoothUnauthorized { SettingsLink(title:"打开蓝牙权限设置",anchor:"Privacy_Bluetooth") }
             }.padding(.horizontal,26).padding(.bottom,20)
             ScrollView {
                 VStack(spacing:18) {
@@ -300,17 +311,6 @@ struct OutputView: View {
             Text("把动作交给其他程序").font(.system(size:25,weight:.semibold))
             Text("标准 DSU 提供体感数据；JSON 便于接入自己的程序。两路输出都只在这台 Mac 上运行。").foregroundStyle(.secondary)
             GroupBox {
-                VStack(alignment:.leading,spacing:14) {
-                    HStack { Label("鼠标模式",systemImage:"cursorarrow.motionlines").font(.title2); Spacer(); Toggle("开启鼠标模式",isOn:Binding(get:{ output.mouseEnabled },set:{ output.setMouseMode($0) })).toggleStyle(.switch) }
-                    Picker("移动指针的手柄",selection:$output.mouseHand) { Text("左手柄移动，右手柄敲击点击").tag(0); Text("右手柄移动，左手柄敲击点击").tag(1) }
-                    HStack { Text("移动灵敏度"); Slider(value:$output.mouseSensitivity,in:2...20); Text(String(format:"%.1f",output.mouseSensitivity)).frame(width:36) }
-                    HStack { Text("敲击阈值"); Slider(value:$output.tapThreshold,in:0.5...3); Text(String(format:"%.1f g",output.tapThreshold)).frame(width:48) }
-                    HStack { Toggle("水平反向",isOn:$output.invertMouseX); Toggle("垂直反向",isOn:$output.invertMouseY) }
-                    Text("转动移动手柄控制指针；短促敲击另一只手柄触发鼠标左键。数值越高，敲击需要越用力。建议先完成静置校准。") .foregroundStyle(.secondary)
-                    Text(output.mousePermission ? "辅助功能：已授权" : "请在系统设置 → 隐私与安全性 → 辅助功能中允许 WeeWaa Motion，然后重新开启鼠标模式。") .font(.system(size:12)).foregroundStyle(output.mousePermission ? cyan : amber)
-                }.padding(14)
-            }
-            GroupBox {
                 VStack(alignment:.leading,spacing:16) {
                     HStack { Label("DSU / Cemuhook",systemImage:"gamecontroller").font(.title2); Spacer(); Toggle("开启 DSU",isOn:Binding(get:{ output.dsuEnabled },set:{ output.setDSU($0) })).toggleStyle(.switch) }
                     Text("127.0.0.1 : 26760").font(.system(size:25,weight:.medium,design:.monospaced)).foregroundStyle(cyan)
@@ -318,7 +318,7 @@ struct OutputView: View {
                     if output.pairMode {
                         Picker("输出槽位",selection:$output.pairHand) { Text("槽位 0").tag(0); Text("槽位 1").tag(1) }
                         Toggle("双手混合到同一个槽位",isOn:$output.mixHands)
-                        HStack { Text(output.keyboardPermission ? "输入监控：已授权" : "输入监控：未授权，请在系统设置中允许 WeeWaa Motion"); Spacer(); Text("当前按键：\(output.pressedKeys)") }.font(.system(size:12)).foregroundStyle(output.keyboardPermission ? cyan : amber)
+                        HStack { Text(output.keyboardPermission ? "输入监控：已授权" : "输入监控：未授权，请在系统设置中允许 WeeWaa Motion"); if !output.keyboardPermission { SettingsLink(title:"打开输入监控设置",anchor:"Privacy_ListenEvent") }; Spacer(); Text("当前按键：\(output.pressedKeys)") }.font(.system(size:12)).foregroundStyle(output.keyboardPermission ? cyan : amber)
                         Text("方向键：十字键  ·  A/S/Z/X：A/X/B/Y  ·  Q/E：L/R  ·  W/D：ZL/ZR  ·  F/R：L3/R3  ·  回车：+  ·  删除：−  ·  空格：Home").font(.system(size:12)).textSelection(.enabled)
                         Text(output.mixHands ? "左右手的数据交替发送到所选槽位，模拟器会把它们当作同一个传感器，动作可能互相干扰。键盘可独立于手柄连接使用；摇杆保持中立。" : "槽位 0 对应左手，槽位 1 对应右手。键盘可独立于手柄连接使用；摇杆保持中立。") .foregroundStyle(amber)
                     } else {
@@ -327,6 +327,20 @@ struct OutputView: View {
                     ForEach(controllers) { DSUStateRow(state:$0) }
                     HStack { Text(output.status); Spacer(); Text("\(output.clientCount) 个订阅客户端 · 已发送 \(output.sent) 包") }.font(.system(size:11,design:.monospaced)).foregroundStyle(.secondary)
                     Link("DSU 协议参考",destination:URL(string:"https://v1993.github.io/cemuhook-protocol/")!).font(.system(size:11))
+                }.padding(14)
+            }
+            GroupBox {
+                VStack(alignment:.leading,spacing:14) {
+                    HStack { Label("鼠标模式",systemImage:"cursorarrow.motionlines").font(.title2); Spacer(); Toggle("开启鼠标模式",isOn:Binding(get:{ output.mouseEnabled },set:{ output.setMouseMode($0) })).toggleStyle(.switch) }
+                    Picker("移动指针的手柄",selection:$output.mouseHand) { Text("左手柄移动，右手柄敲击点击").tag(0); Text("右手柄移动，左手柄敲击点击").tag(1) }
+                    HStack { Text("移动灵敏度"); Slider(value:$output.mouseSensitivity,in:2...20); Text(String(format:"%.1f",output.mouseSensitivity)).frame(width:36) }
+                    HStack { Text("敲击阈值"); Slider(value:$output.tapThreshold,in:0.5...3); Text(String(format:"%.1f g",output.tapThreshold)).frame(width:48) }
+                    HStack { Toggle("水平反向",isOn:$output.invertMouseX); Toggle("垂直反向",isOn:$output.invertMouseY) }
+                    Text("转动移动手柄控制指针；短促敲击另一只手柄触发鼠标左键。数值越高，敲击需要越用力。建议先完成静置校准。") .foregroundStyle(.secondary)
+                    HStack {
+                        Text(output.mousePermission ? "辅助功能：已授权" : "辅助功能：未授权，请在系统设置中允许 WeeWaa Motion。")
+                        if !output.mousePermission { SettingsLink(title:"打开辅助功能设置",anchor:"Privacy_Accessibility") }
+                    }.font(.system(size:12)).foregroundStyle(output.mousePermission ? cyan : amber)
                 }.padding(14)
             }
             GroupBox {

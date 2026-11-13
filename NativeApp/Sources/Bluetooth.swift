@@ -6,6 +6,7 @@ final class MotionManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     let controllers = Hand.allCases.map(ControllerState.init)
     let output = MotionOutput()
     @Published var bluetoothStatus = "点击连接以开启蓝牙"
+    @Published var bluetoothUnauthorized = false
     @Published var demo = false
     @Published var log = [String]()
     private var central: CBCentralManager?
@@ -77,6 +78,7 @@ final class MotionManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     func disconnectAll() { for hand in Hand.allCases { disconnect(hand) }; setDemo(false) }
     func shutdown() { disconnectAll(); timers?.invalidate(); demoTimer?.invalidate(); output.shutdown() }
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        bluetoothUnauthorized = central.state == .unauthorized
         switch central.state {
         case .poweredOn: bluetoothStatus = "蓝牙就绪"; for hand in wanted { find(hand) }
         case .poweredOff: bluetoothStatus = "请在系统中开启蓝牙"; for state in controllers { state.disconnected(); state.status = "蓝牙关闭" }
