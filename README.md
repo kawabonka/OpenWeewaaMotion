@@ -19,6 +19,10 @@ WeeWaa Motion 是一款 macOS 原生工具，可连接 WeeWaa 左右手柄，查
 - **体感输出**：通过本机 DSU / Cemuhook 或 JSON UDP 向兼容程序提供运动数据。
 - **震动回传**：通过本机 UDP 接收震动指令，并支持 nxnative 接入补丁。
 
+## 推荐玩法
+
+在搭载 Apple M 系列芯片的 MacBook 上，使用 WeeWaa Motion 连接左右手柄，配合 Astris 体验《有氧拳击 3》。在 WeeWaa Motion 中开启 DSU 体感输出，并在 Astris 中配置相应输入；具体兼容性、按键映射和体感效果以实际体验为准。
+
 ## 下载与安装
 
 从 [Releases](https://github.com/kawabonka/OpenWeewaaMotion/releases) 下载最新版本，解压后打开 `WeeWaa Motion.app`。需要 macOS 14 或更高版本。发布包为本机构建、临时签名的应用，未经过 Apple 公证；当前发布包的处理器架构请参见对应 Release 说明。
