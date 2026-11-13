@@ -112,6 +112,12 @@ final class ControllerState: ObservableObject, Identifiable {
         message = "已重置。物理单位恢复为估算；请重新校准。"
     }
     func recenter() { centerAngles = filteredAngles; angles = [0,0,0] }
+    func resetSamples() {
+        packets = 0; hz = 0; history = []; raw = [Double](repeating:0,count:6)
+        accel = [0,0,0]; gyro = [0,0,0]; angles = [0,0,0]
+        lastCounter = nil; lastArrival = 0; rateStart = 0; ratePackets = 0; lastPublish = 0
+        fusionReady = false; centerAngles = [0,0,0]
+    }
     func disconnected() {
         connected = false; streaming = false; hz = 0; battery = nil
         lastCounter = nil; fusionReady = false; centerAngles = [0,0,0]; rateStart = 0; ratePackets = 0

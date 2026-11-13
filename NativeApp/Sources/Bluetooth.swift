@@ -17,7 +17,10 @@ final class MotionManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     private var tokens = [UUID:UUID]()
     private var timers: Timer?
     private var demoTimer: Timer?
-    private var lastKeepalive = 0.0
+    private var lastKeepalive = [UUID:Double]()
+    private var streamStarted = Set<UUID>()
+    private var notificationCounts = [UUID:Int]()
+    private var invalidMotionCounts = [UUID:Int]()
     private var lastRumble = [Hand:Double]()
     private let service = CBUUID(string:"AE30")
     private let tx = CBUUID(string:"AE01")
@@ -46,6 +49,7 @@ final class MotionManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     func connectBoth() { for hand in Hand.allCases { connect(hand) } }
     func connect(_ hand: Hand) {
         if demo { setDemo(false) }
+        if !wanted.contains(hand) { controllers[hand.rawValue].resetSamples() }
         wanted.insert(hand); controllers[hand.rawValue].status = "等待蓝牙…"
         if central == nil { central = CBCentralManager(delegate:self,queue:.main) }
         else if central?.state == .poweredOn { find(hand) }
@@ -70,7 +74,7 @@ final class MotionManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     func disconnect(_ hand: Hand) {
         wanted.remove(hand)
         for (id,peripheral) in peripherals where sides[id] == hand {
-            tokens.removeValue(forKey:id); writers.removeValue(forKey:id); central?.cancelPeripheralConnection(peripheral)
+            tokens.removeValue(forKey:id); writers.removeValue(forKey:id); streamStarted.remove(id); lastKeepalive.removeValue(forKey:id); central?.cancelPeripheralConnection(peripheral)
         }
         controllers[hand.rawValue].disconnected(); controllers[hand.rawValue].status = "未连接"
         if wanted.isEmpty { central?.stopScan() }
@@ -106,6 +110,7 @@ final class MotionManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         guard let hand = sides[peripheral.identifier] else { return }
         tokens.removeValue(forKey:peripheral.identifier); writers.removeValue(forKey:peripheral.identifier)
+        streamStarted.remove(peripheral.identifier); lastKeepalive.removeValue(forKey:peripheral.identifier)
         controllers[hand.rawValue].disconnected(); controllers[hand.rawValue].status = error?.localizedDescription ?? "已断开"
         note("\(hand.title) 已断开")
         // Reconnection is explicit so disconnecting a device elsewhere does not
@@ -132,34 +137,53 @@ final class MotionManager: NSObject, ObservableObject, CBCentralManagerDelegate,
     func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         if let error { fail(peripheral,error.localizedDescription); return }
         guard characteristic.uuid == rx, characteristic.isNotifying else { return }
+        startMotion(peripheral, retry: false)
+    }
+    private func startMotion(_ peripheral: CBPeripheral, retry: Bool) {
         let id = peripheral.identifier; let token = UUID(); tokens[id] = token
+        if !retry { notificationCounts[id] = 0; invalidMotionCounts[id] = 0 }
+        streamStarted.remove(id); lastKeepalive.removeValue(forKey:id)
         let commands: [(Double,[UInt8])] = [(0.9,[0x29]),(1.14,[0x60]),(1.54,[0x60]),(1.92,[0x46]),(2.92,[0x12,0x64,0xFF,0x19,4,0x50,1,3,5,7,0])]
         for (delay,bytes) in commands {
             DispatchQueue.main.asyncAfter(deadline:.now()+delay) { [weak self,weak peripheral] in
                 guard let self, let peripheral, self.tokens[id] == token, peripheral.state == .connected,
                       let writer = self.writers[id] else { return }
                 peripheral.writeValue(Data(bytes),for:writer,type:.withoutResponse)
+                if bytes.first == 0x12 {
+                    self.streamStarted.insert(id)
+                    self.lastKeepalive[id] = ProcessInfo.processInfo.systemUptime - 1
+                }
             }
         }
-        if let hand = sides[id] { controllers[hand.rawValue].status = "开启传感器…" }
-        DispatchQueue.main.asyncAfter(deadline:.now()+8) { [weak self] in
-            guard let self, self.tokens[id] == token, let hand = self.sides[id], !self.controllers[hand.rawValue].streaming else { return }
-            self.controllers[hand.rawValue].status = "未收到体感，请断开后重连"
+        if let hand = sides[id] { controllers[hand.rawValue].status = retry ? "重新启动传感器…" : "开启传感器…" }
+        DispatchQueue.main.asyncAfter(deadline:.now()+8) { [weak self, weak peripheral] in
+            guard let self, let peripheral, self.tokens[id] == token, peripheral.state == .connected,
+                  let hand = self.sides[id], !self.controllers[hand.rawValue].streaming else { return }
+            if retry {
+                self.controllers[hand.rawValue].status = "未收到体感 · 通知 \(self.notificationCounts[id] ?? 0)，无效运动包 \(self.invalidMotionCounts[id] ?? 0)"
+            } else {
+                self.startMotion(peripheral, retry:true)
+            }
         }
     }
     func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, let hand = sides[peripheral.identifier], let data = characteristic.value else { return }
         let state = controllers[hand.rawValue]
         if characteristic.uuid == CBUUID(string:"2A19"), let level = data.first { state.battery = Int(level); return }
-        if characteristic.uuid == rx, let frame = MotionFrame.decode(data) { state.outputRaw = frame.raw; state.accept(frame) }
+        if characteristic.uuid == rx {
+            notificationCounts[peripheral.identifier, default:0] += 1
+            if let frame = MotionFrame.decode(data) { state.outputRaw = frame.raw; state.accept(frame) }
+            else if data.count == 19 { invalidMotionCounts[peripheral.identifier, default:0] += 1 }
+        }
     }
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime
-        if now-lastKeepalive >= 3 {
-            for (id,writer) in writers {
-                if let peripheral = peripherals[id], peripheral.state == .connected { peripheral.writeValue(Data([0x19]),for:writer,type:.withoutResponse) }
+        for (id,writer) in writers where streamStarted.contains(id) {
+            if now - (lastKeepalive[id] ?? now) >= 3,
+               let peripheral = peripherals[id], peripheral.state == .connected {
+                peripheral.writeValue(Data([0x19]),for:writer,type:.withoutResponse)
+                lastKeepalive[id] = now
             }
-            lastKeepalive = now
         }
         for state in controllers where state.connected && state.streaming && !state.demo && now-state.lastArrival > 1 {
             state.streaming = false; state.hz = 0; state.status = "数据已暂停，请重连"
@@ -186,7 +210,7 @@ final class MotionManager: NSObject, ObservableObject, CBCentralManagerDelegate,
                 }
             }
         } else if demo {
-            demo = false; for state in controllers { state.demo = false; state.disconnected(); state.status = "未连接" }
+            demo = false; for state in controllers { state.demo = false; state.disconnected(); state.resetSamples(); state.status = "未连接" }
         }
     }
 }
