@@ -74,6 +74,20 @@ enum DSUCodec {
     }
 }
 
+enum DSUKeyboardMode {
+    case off
+    case pair
+    case separate
+
+    func slots(pairSlot: Int) -> [Int] {
+        switch self {
+        case .off: return []
+        case .pair: return [pairSlot]
+        case .separate: return [Hand.left.rawValue, Hand.right.rawValue]
+        }
+    }
+}
+
 final class MotionOutput: ObservableObject {
     @Published var mouseEnabled = false
     @Published var mouseHand = 0
@@ -136,7 +150,8 @@ final class MotionOutput: ObservableObject {
     @Published var clientCount = 0
     @Published var sent = 0
     @Published var jsonPort = 8765
-    @Published var pairMode = false
+    @Published private(set) var keyboardMode: DSUKeyboardMode = .off
+    private var pairMode: Bool { keyboardMode == .pair }
     @Published var pairHand = 0
     @Published var mixHands = false
     @Published var keyboardPermission = CGPreflightListenEventAccess()
@@ -162,15 +177,19 @@ final class MotionOutput: ObservableObject {
     private var lastUI = 0.0
     private var keyboardTimer: Timer?
     private weak var lastPairState: ControllerState?
+    private var keyboardButtons = PairButtons()
     private let pairKeys: [UInt16] = [123,125,124,126,36,15,3,51,7,6,0,1,14,12,2,13,49]
-    func setPairMode(_ enabled: Bool) {
-        pairMode = enabled
+    func setKeyboardMode(_ mode: DSUKeyboardMode) {
+        keyboardMode = mode
+        let enabled = mode != .off
+        lastPairState = nil
+        keyboardButtons = PairButtons()
         if enabled && !CGPreflightListenEventAccess() { _ = CGRequestListenEventAccess() }
         keyboardPermission = CGPreflightListenEventAccess()
         keyboardTimer?.invalidate(); keyboardTimer = nil
         if enabled {
             keyboardTimer = Timer.scheduledTimer(withTimeInterval:1.0/60.0,repeats:true) { [weak self] _ in self?.sendKeyboardFrame() }
-        } else { pressedKeys = "无"; lastPairState = nil }
+        } else { pressedKeys = "无" }
     }
     func setDSU(_ enabled: Bool) {
         if !enabled { stop(); return }
@@ -227,7 +246,7 @@ final class MotionOutput: ObservableObject {
             onRumble?(hand,intensity)
         }
     }
-    func shutdown() { setMouseMode(false); setPairMode(false); stop(); setRumble(false); if jsonFD >= 0 { Darwin.close(jsonFD); jsonFD = -1 } }
+    func shutdown() { setMouseMode(false); setKeyboardMode(.off); stop(); setRumble(false); if jsonFD >= 0 { Darwin.close(jsonFD); jsonFD = -1 } }
     private func active(_ state: ControllerState?) -> Bool {
         guard let state else { return false }
         return !state.demo && state.connected && state.streaming && !state.calibrating && ProcessInfo.processInfo.systemUptime-state.lastArrival < 0.5
@@ -259,7 +278,7 @@ final class MotionOutput: ObservableObject {
                     let state: ControllerState? = mixed && Int(slot) == pairHand
                         ? [lookup?(0),lookup?(1)].compactMap { $0 }.first(where: { active($0) })
                         : mixed ? nil : lookup?(Int(slot))
-                    let payload = DSUCodec.info(slot:Int(slot),active:(pairMode && Int(slot) == pairHand) || active(state),battery:state?.battery)
+                    let payload = DSUCodec.info(slot:Int(slot),active:keyboardMode.slots(pairSlot:pairHand).contains(Int(slot)) || active(state),battery:state?.battery)
                     send(DSUCodec.packet(type:type,payload:payload,serverID:serverID),to:address)
                 }
             } else if type == 0x100002, b.count >= 28 {
@@ -277,16 +296,24 @@ final class MotionOutput: ObservableObject {
         }
     }
     private func sendKeyboardFrame() {
-        guard pairMode else { return }
-        keyboardPermission = CGPreflightListenEventAccess()
-        let keys = Set(pairKeys.filter { CGEventSource.keyState(.combinedSessionState,key:CGKeyCode($0)) })
+        let slots = keyboardMode.slots(pairSlot:pairHand)
+        guard !slots.isEmpty else { return }
+        let permitted = CGPreflightListenEventAccess()
+        if keyboardPermission != permitted { keyboardPermission = permitted }
+        let keys = permitted ? Set(pairKeys.filter { CGEventSource.keyState(.combinedSessionState,key:CGKeyCode($0)) }) : []
+        keyboardButtons = PairButtons(pressed:keys)
         let labels: [UInt16:String] = [123:"←",125:"↓",124:"→",126:"↑",36:"回车",15:"R",3:"F",51:"删除",7:"X",6:"Z",0:"A",1:"S",14:"E",12:"Q",2:"D",13:"W",49:"空格"]
         let text = keys.sorted().compactMap { labels[$0] }.joined(separator:" ")
         let shown = text.isEmpty ? "无" : text
         if pressedKeys != shown { pressedKeys = shown }
         guard dsuEnabled else { return }
-        let state = lastPairState.flatMap { active($0) && (mixHands || $0.hand.rawValue == pairHand) ? $0 : nil }
-        sendFrame(slot:pairHand, timestamp:UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000), accel:state?.outputAccel ?? [0,0,1], gyro:state?.outputGyro ?? [0,0,0], battery:state?.battery, buttons:PairButtons(pressed:keys))
+        let timestamp = UInt64(ProcessInfo.processInfo.systemUptime * 1_000_000)
+        for slot in slots {
+            let candidate = pairMode && mixHands ? lastPairState : lookup?(slot)
+            let state = candidate.flatMap { active($0) ? $0 : nil }
+            sendFrame(slot:slot, timestamp:timestamp, accel:state?.outputAccel ?? [0,0,1],
+                      gyro:state?.outputGyro ?? [0,0,0], battery:state?.battery, buttons:keyboardButtons)
+        }
     }
     private func sendFrame(slot: Int, timestamp: UInt64, accel: [Double], gyro: [Double], battery: Int?, buttons: PairButtons) {
         let now = ProcessInfo.processInfo.systemUptime
@@ -321,7 +348,7 @@ final class MotionOutput: ObservableObject {
         if dsuEnabled && active(state) {
             let slot = Self.outputSlot(hand:state.hand.rawValue,pairMode:pairMode,mixHands:mixHands,target:pairHand)
             if pairMode && slot == pairHand { lastPairState = state }
-            let buttons = pairMode && slot == pairHand ? PairButtons(pressed:Set(pairKeys.filter { CGEventSource.keyState(.combinedSessionState,key:CGKeyCode($0)) })) : PairButtons()
+            let buttons = keyboardMode.slots(pairSlot:pairHand).contains(slot) ? keyboardButtons : PairButtons()
             sendFrame(slot:slot,timestamp:state.timestampUS,accel:state.outputAccel,gyro:state.outputGyro,battery:state.battery,buttons:buttons)
         }
         if now-lastUI >= 1 { clientCount = clients.count; sent = sentCount; lastUI = now }

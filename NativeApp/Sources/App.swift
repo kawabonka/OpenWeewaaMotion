@@ -314,13 +314,23 @@ struct OutputView: View {
                 VStack(alignment:.leading,spacing:16) {
                     HStack { Label("DSU / Cemuhook",systemImage:"gamecontroller").font(.title2); Spacer(); Toggle("开启 DSU",isOn:Binding(get:{ output.dsuEnabled },set:{ output.setDSU($0) })).toggleStyle(.switch) }
                     Text("127.0.0.1 : 26760").font(.system(size:25,weight:.medium,design:.monospaced)).foregroundStyle(cyan)
-                    Toggle("Joy-Con Pair · 键盘按键",isOn:Binding(get:{ output.pairMode },set:{ output.setPairMode($0) }))
-                    if output.pairMode {
-                        Picker("输出槽位",selection:$output.pairHand) { Text("槽位 0").tag(0); Text("槽位 1").tag(1) }
-                        Toggle("双手混合到同一个槽位",isOn:$output.mixHands)
+                    Picker("DSU 键盘按键模式",selection:Binding(get:{ output.keyboardMode },set:{ output.setKeyboardMode($0) })) {
+                        Text("关闭键盘按键").tag(DSUKeyboardMode.off)
+                        Text("Joy-Con Pair · 键盘按键").tag(DSUKeyboardMode.pair)
+                        Text("Joy-Con L / Joy-Con R · 键盘按键").tag(DSUKeyboardMode.separate)
+                    }
+                    if output.keyboardMode != .off {
+                        if output.keyboardMode == .pair {
+                            Picker("输出槽位",selection:$output.pairHand) { Text("槽位 0").tag(0); Text("槽位 1").tag(1) }
+                            Toggle("双手混合到同一个槽位",isOn:$output.mixHands)
+                        }
                         HStack { Text(output.keyboardPermission ? "输入监控：已授权" : "输入监控：未授权，请在系统设置中允许 WeeWaa Motion"); if !output.keyboardPermission { SettingsLink(title:"打开输入监控设置",anchor:"Privacy_ListenEvent") }; Spacer(); Text("当前按键：\(output.pressedKeys)") }.font(.system(size:12)).foregroundStyle(output.keyboardPermission ? cyan : amber)
                         Text("方向键：十字键  ·  A/S/Z/X：A/X/B/Y  ·  Q/E：L/R  ·  W/D：ZL/ZR  ·  F/R：L3/R3  ·  回车：+  ·  删除：−  ·  空格：Home").font(.system(size:12)).textSelection(.enabled)
-                        Text(output.mixHands ? "左右手的数据交替发送到所选槽位，模拟器会把它们当作同一个传感器，动作可能互相干扰。键盘可独立于手柄连接使用；摇杆保持中立。" : "槽位 0 对应左手，槽位 1 对应右手。键盘可独立于手柄连接使用；摇杆保持中立。") .foregroundStyle(amber)
+                        if output.keyboardMode == .separate {
+                            Text("键盘按下和松开会同时发送给槽位 0（Joy-Con L）和槽位 1（Joy-Con R）。两人的体感分别来自各自的手柄。").foregroundStyle(.secondary)
+                        } else {
+                            Text(output.mixHands ? "左右手的数据交替发送到所选槽位，模拟器会把它们当作同一个传感器，动作可能互相干扰。键盘可独立于手柄连接使用；摇杆保持中立。" : "槽位 0 对应左手，槽位 1 对应右手。键盘可独立于手柄连接使用；摇杆保持中立。").foregroundStyle(amber)
+                        }
                     } else {
                         Text("槽位 0 是左手，槽位 1 是右手；按键和摇杆保持中立。") .foregroundStyle(.secondary)
                     }
